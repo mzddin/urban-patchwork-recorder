@@ -1,0 +1,7 @@
+TAUTAN ASISTEN AI SIDANG
+
+URL setelah GitHub Pages aktif:
+https://mzddin.github.io/urban-patchwork-recorder/asisten-ai/
+
+Tambahkan menu atau tombol pada portal utama yang mengarah ke URL tersebut.
+Jangan menghapus file portal yang sudah ada.
