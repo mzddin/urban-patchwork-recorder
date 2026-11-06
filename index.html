@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Perekam Diskusi — Portal Sidang Tesis</title>
+<meta name="theme-color" content="#20384f">
+<style>
+:root{--navy:#20384f;--blue:#24577a;--teal:#527c82;--ink:#20384f;--muted:#667987;--line:#d8e2e9;--bg:#f5f8fa;--white:#fff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:Arial,Helvetica,sans-serif}
+main{max-width:850px;margin:38px auto;padding:0 20px}
+header{margin-bottom:22px} .eyebrow{font-size:11px;letter-spacing:.16em;font-weight:800;color:var(--teal);text-transform:uppercase}
+h1{font-size:clamp(27px,4vw,38px);margin:9px 0;color:var(--navy)}
+.lead{color:var(--muted);line-height:1.6;font-size:14px}
+.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:24px;box-shadow:0 8px 28px rgba(32,56,79,.06)}
+.config{display:grid;grid-template-columns:1fr;gap:13px;margin-bottom:18px}
+label{display:block;font-size:12px;font-weight:700;color:#496273;margin-bottom:6px}
+input{width:100%;height:43px;border:1px solid var(--line);border-radius:8px;padding:0 12px;font:14px Arial;color:var(--ink);background:#fff}
+.timer{font:700 clamp(42px,9vw,66px)/1.1 ui-monospace,Consolas,monospace;letter-spacing:.03em;text-align:center;margin:20px 0;color:var(--navy);font-variant-numeric:tabular-nums}
+.state{text-align:center;color:var(--muted);font-size:13px;min-height:20px}
+.actions{display:flex;justify-content:center;gap:9px;flex-wrap:wrap;margin:20px 0}
+button,.button{border:0;border-radius:8px;padding:12px 18px;font-weight:700;cursor:pointer;font-size:13px;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
+.primary{background:var(--navy);color:#fff}.secondary{background:#edf3f6;color:var(--navy);border:1px solid var(--line)}.danger{background:#8a3434;color:#fff}button:disabled{opacity:.45;cursor:not-allowed}
+.progress{height:7px;background:#e8eef2;border-radius:10px;overflow:hidden;margin:15px 0}.progress span{display:block;width:0;height:100%;background:var(--teal)}
+.note{font-size:12px;color:var(--muted);line-height:1.6;margin-top:16px}
+.statusbox{margin-top:15px;background:#f5f8fa;border-radius:8px;padding:12px;font-size:12px;color:#536b7b;line-height:1.6;min-height:44px}
+.parts{margin-top:20px}.parts h2{font-size:15px}.parts ul{padding-left:18px;font-size:12px;color:#536b7b;line-height:1.8}
+footer{text-align:center;color:#87949d;font-size:11px;margin:20px 0}
+@media(max-width:560px){main{margin:20px auto;padding:0 12px}.card{padding:17px}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<div class="eyebrow">Portal Sidang Tesis · Urban Patchwork</div>
+<h1>Perekam Sesi Diskusi</h1>
+<p class="lead">Halaman perekaman terpisah agar browser dapat memberikan akses mikrofon. Rekaman dikirim bertahap ke folder Google Drive portal sidang.</p>
+</header>
+<section class="card">
+<div class="config">
+<div><label for="endpoint">URL Web App Google Apps Script (/exec)</label><input id="endpoint" type="url" placeholder="https://script.google.com/macros/s/.../exec"></div>
+<div><label for="pin">PIN perekaman</label><input id="pin" type="password" autocomplete="off" placeholder="Masukkan PIN yang disetel di Code.gs"></div>
+</div>
+<div class="timer" id="clock">00:00:00</div>
+<div class="state" id="state">Siap merekam · belum ada akses mikrofon</div>
+<div class="progress"><span id="progress"></span></div>
+<div class="actions">
+<button class="primary" id="start">● Mulai Rekam</button>
+<button class="secondary" id="pause" disabled>Ⅱ Jeda</button>
+<button class="danger" id="stop" disabled>■ Hentikan & Simpan</button>
+</div>
+<div class="statusbox" id="status">Masukkan URL Web App dan PIN, lalu klik Mulai Rekam. Browser akan meminta izin mikrofon pada domain GitHub Pages.</div>
+<div class="parts"><h2>Dokumentasi unggahan</h2><ul id="parts"><li>Belum ada segmen yang diunggah.</li></ul></div>
+<p class="note"><b>Catatan:</b> Biarkan tab ini tetap terbuka selama sesi. Rekaman dibagi menjadi segmen sekitar 60 detik. Pastikan koneksi internet stabil dan jangan menutup tab sebelum proses penyimpanan selesai.</p>
+</section>
+<footer>Portal Sidang Tesis · Universitas Gadjah Mada</footer>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let media=null,recorder=null,segmentChunks=[],segmentTimer=null,elapsedTimer=null,startTime=0,elapsedBeforePause=0;
+let sessionId='',partNo=0,parts=[],active=false,paused=false,uploadCount=0,finalizing=false,stopRequested=false;
+const SEGMENT_MS=60000;
+const endpointInput=$('endpoint'),pinInput=$('pin');
+endpointInput.value=localStorage.getItem('up_rec_endpoint')||'';
+function fmt(ms){let t=Math.floor(ms/1000);return [Math.floor(t/3600),Math.floor(t%3600/60),t%60].map(v=>String(v).padStart(2,'0')).join(':')}
+function say(msg){$('status').textContent=msg}
+function setState(msg){$('state').textContent=msg}
+function getElapsed(){return elapsedBeforePause+(active&&!paused?Date.now()-startTime:0)}
+function draw(){ $('clock').textContent=fmt(getElapsed()); $('progress').style.width=(getElapsed()%3600000)/3600000*100+'%'; }
+function safeSession(){return sessionId.replace(/[^A-Za-z0-9_-]/g,'_')}
+function jsonpStatus(part){
+ return new Promise((resolve,reject)=>{
+   const cb='upcb_'+Math.random().toString(36).slice(2);
+   const script=document.createElement('script');
+   const timer=setTimeout(()=>{cleanup();reject(new Error('Server belum memberi konfirmasi. Periksa koneksi atau deployment Apps Script.'))},25000);
+   function cleanup(){clearTimeout(timer);delete window[cb];script.remove()}
+   window[cb]=data=>{cleanup();resolve(data)};
+   script.onerror=()=>{cleanup();reject(new Error('Tidak dapat membaca status dari Apps Script.'))};
+   script.src=endpointInput.value.trim()+'?action=recordStatus&sessionId='+encodeURIComponent(safeSession())+'&partNumber='+encodeURIComponent(part)+'&callback='+cb+'&_='+Date.now();
+   document.body.appendChild(script);
+ });
+}
+async function postPayload(payload,part){
+ const url=endpointInput.value.trim();
+ await fetch(url,{method:'POST',mode:'no-cors',redirect:'follow',headers:{'Content-Type':'text/plain;charset=UTF-8'},body:JSON.stringify(payload)});
+ for(let i=0;i<30;i++){
+   await new Promise(r=>setTimeout(r,1500));
+   const result=await jsonpStatus(part);
+   if(result.state==='done')return result;
+   if(result.state==='error')throw new Error(result.message||'Unggahan ditolak server.');
+ }
+ throw new Error('Waktu tunggu unggahan habis.');
+}
+async function uploadBlob(blob,number){
+ uploadCount++;
+ try{
+   const base64=await new Promise((resolve,reject)=>{
+     const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(reader.error);reader.readAsDataURL(blob);
+   });
+   const mime=(blob.type||'audio/webm').split(';')[0];
+   const result=await postPayload({action:'uploadPart',sessionId:safeSession(),partNumber:number,mimeType:mime,base64,pin:pinInput.value.trim()},number);
+   parts[number-1]=result;
+   renderParts();
+   say('Bagian '+number+' berhasil disimpan ke Google Drive.');
+ }catch(err){say('Gagal menyimpan bagian '+number+': '+err.message);console.error(err)}
+ finally{uploadCount--;if(stopRequested)tryFinalize()}
+}
+function renderParts(){
+ const ul=$('parts');ul.innerHTML='';
+ if(!parts.length){ul.innerHTML='<li>Belum ada segmen yang diunggah.</li>';return}
+ parts.filter(Boolean).forEach((p,i)=>{const li=document.createElement('li');const a=document.createElement('a');a.href=p.url;a.target='_blank';a.rel='noopener';a.textContent=p.name||('Bagian '+(i+1));li.appendChild(a);ul.appendChild(li)});
+}
+function startSegment(){
+ if(!active||paused||!media)return;
+ segmentChunks=[];
+ const types=['audio/webm;codecs=opus','audio/webm','audio/mp4'];
+ const mime=types.find(t=>MediaRecorder.isTypeSupported(t))||'';
+ try{recorder=new MediaRecorder(media,mime?{mimeType:mime,audioBitsPerSecond:64000}:{audioBitsPerSecond:64000})}
+ catch(e){say('MediaRecorder gagal dibuat: '+e.message);stopRecording();return}
+ recorder.ondataavailable=e=>{if(e.data&&e.data.size)segmentChunks.push(e.data)};
+ recorder.onstop=()=>{
+   const blob=new Blob(segmentChunks,{type:recorder.mimeType||'audio/webm'});
+   if(blob.size){partNo++;uploadBlob(blob,partNo)}
+   if(active&&!paused)startSegment();
+   else if(stopRequested)tryFinalize();
+ };
+ recorder.start(1000);
+ clearTimeout(segmentTimer);
+ segmentTimer=setTimeout(()=>{if(recorder&&recorder.state!=='inactive')recorder.stop()},SEGMENT_MS);
+}
+async function startRecording(){
+ if(active)return;
+ const url=endpointInput.value.trim(),pin=pinInput.value.trim();
+ if(!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec/.test(url)){say('Masukkan URL Web App Apps Script yang valid dan berakhiran /exec.');return}
+ if(!pin){say('PIN perekaman wajib diisi.');return}
+ if(!navigator.mediaDevices?.getUserMedia){say('Browser tidak menyediakan akses mikrofon. Pastikan halaman GitHub Pages dibuka melalui HTTPS.');return}
+ endpointInput.disabled=true;pinInput.disabled=true;$('start').disabled=true;
+ try{
+   media=await navigator.mediaDevices.getUserMedia({audio:true});
+   sessionId='Diskusi_'+new Date().toISOString().replace(/[:.]/g,'-');
+   active=true;paused=false;stopRequested=false;finalizing=false;parts=[];partNo=0;elapsedBeforePause=0;startTime=Date.now();
+   localStorage.setItem('up_rec_endpoint',url);
+   setState('MEREKAM · mikrofon aktif');say('Mikrofon berhasil diakses. Rekaman sedang berlangsung.');
+   $('pause').disabled=false;$('stop').disabled=false;
+   elapsedTimer=setInterval(draw,250);startSegment();
+ }catch(err){
+   endpointInput.disabled=false;pinInput.disabled=false;$('start').disabled=false;
+   setState('Mikrofon tidak tersedia');
+   say('Akses mikrofon gagal ('+(err.name||'Error')+'): '+err.message+'. Periksa izin situs GitHub Pages dan izin mikrofon sistem operasi.');
+ }
+}
+function pauseRecording(){
+ if(!active||paused)return;
+ paused=true;elapsedBeforePause+=Date.now()-startTime;clearTimeout(segmentTimer);
+ if(recorder&&recorder.state!=='inactive')recorder.stop();
+ $('pause').textContent='▶ Lanjutkan';setState('DIJEDA');say('Perekaman dijeda. Klik Lanjutkan untuk meneruskan sesi yang sama.');draw();
+}
+function resumeRecording(){
+ if(!active||!paused)return;
+ paused=false;startTime=Date.now();$('pause').textContent='Ⅱ Jeda';setState('MEREKAM · mikrofon aktif');startSegment();
+}
+function stopRecording(){
+ if(!active)return;
+ if(!paused)elapsedBeforePause+=Date.now()-startTime;
+ active=false;paused=false;stopRequested=true;clearTimeout(segmentTimer);clearInterval(elapsedTimer);
+ $('pause').disabled=true;$('stop').disabled=true;
+ if(recorder&&recorder.state!=='inactive')recorder.stop();
+ else tryFinalize();
+ if(media){media.getTracks().forEach(t=>t.stop());media=null}
+ setState('MENYIMPAN REKAMAN');say('Perekaman dihentikan. Menunggu seluruh segmen selesai diunggah…');
+}
+async function tryFinalize(){
+ if(!stopRequested||uploadCount>0||finalizing)return;
+ finalizing=true;
+ try{
+   const payload={sessionId:safeSession(),startedAt:new Date(Date.now()-getElapsed()).toISOString(),endedAt:new Date().toISOString(),duration:fmt(getElapsed()),parts:parts.filter(Boolean),errors:[]};
+   const result=await postPayload({action:'finalize',sessionId:safeSession(),partNumber:'final',session:payload,pin:pinInput.value.trim()},'final');
+   setState('SELESAI · manifest tersimpan');
+   say('Sesi selesai. Manifest berhasil dibuat di Google Drive: '+(result.name||'Manifest sesi'));
+   const li=document.createElement('li');const a=document.createElement('a');a.href=result.url;a.target='_blank';a.rel='noopener';a.textContent='Buka '+result.name;li.appendChild(a);$('parts').appendChild(li);
+ }catch(err){setState('SELESAI · perlu pemeriksaan');say('Segmen tersimpan, tetapi manifest gagal: '+err.message)}
+ finally{
+   active=false;stopRequested=false;finalizing=false;endpointInput.disabled=false;pinInput.disabled=false;$('start').disabled=false;
+   $('pause').textContent='Ⅱ Jeda';draw();
+ }
+}
+$('start').addEventListener('click',startRecording);
+$('pause').addEventListener('click',()=>paused?resumeRecording():pauseRecording());
+$('stop').addEventListener('click',stopRecording);
+</script>
+</body>
+</html>
